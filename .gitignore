@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# MCP tool config — may contain auth tokens in request headers.
+# Auto-created and seeded with the dlptest example on first run.
+mcp_tools.json
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import json
 import os
 from typing import Any
 
@@ -190,6 +191,35 @@ DEFAULT_MCP_CONFIG: dict[str, dict] = {
         "headers": {},
     },
 }
+
+# Location of the persisted MCP tool configuration. Override with MCP_CONFIG_FILE.
+MCP_CONFIG_PATH = os.getenv("MCP_CONFIG_FILE", "mcp_tools.json")
+
+
+def load_mcp_config(path: str = MCP_CONFIG_PATH) -> dict[str, dict]:
+    """Load the MCP tool configuration from disk.
+
+    If the file does not exist, it is created and seeded with
+    DEFAULT_MCP_CONFIG (which includes the dlptest DLP tool as an example).
+    Falls back to DEFAULT_MCP_CONFIG if the file is missing or invalid.
+    """
+    if not os.path.exists(path):
+        save_mcp_config(dict(DEFAULT_MCP_CONFIG), path)
+        return dict(DEFAULT_MCP_CONFIG)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return dict(DEFAULT_MCP_CONFIG)
+
+
+def save_mcp_config(config: dict[str, dict], path: str = MCP_CONFIG_PATH) -> None:
+    """Persist the MCP tool configuration to disk as JSON."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
 
 
 async def _init_mcp_tools(mcp_config: dict[str, dict] | None = None) -> list:

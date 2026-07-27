@@ -87,6 +87,7 @@ GUARDRAIL_PROXY_API_KEY=your-proxy-api-key
 | `OPENAI_BASE_URL` | Optional | Overrides the default OpenAI endpoint for the OpenAI provider; ignored in Proxy mode |
 | `LANGSMITH_TRACING` / `LANGSMITH_ENDPOINT` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional | LangSmith run tracing/observability |
 | `OLLAMA_HOST` | Optional | Overrides the Ollama base URL (set automatically in Docker to reach the host) |
+| `MCP_CONFIG_FILE` | Optional | Path to the MCP tool config file (default `mcp_tools.json`) — see [MCP tool configuration](#mcp-tool-configuration) |
 
 > 💡 The Streamlit sidebar has an **AI Guard Configuration** section that lets you edit any `GUARDRAIL_*` value at runtime and save it back to `.env`.
 
@@ -133,6 +134,56 @@ curl -X POST http://localhost:8000/v1/chat \
     "inspect_response": true
   }'
 ```
+
+---
+
+## MCP tool configuration
+
+The agent can call external [MCP](https://modelcontextprotocol.io/) tools. Their configuration is stored in a JSON file — **`mcp_tools.json`** by default (override the path with the `MCP_CONFIG_FILE` environment variable).
+
+The file is **created automatically on first run**, seeded with the `dlptest` DLP testing tool as an example:
+
+```json
+{
+  "dlptest": {
+    "url": "https://mcp.dlptest.com/api/mcp/",
+    "headers": {}
+  }
+}
+```
+
+Each entry is keyed by the tool name and has:
+- `url` — the MCP server endpoint (HTTP transport).
+- `headers` — optional HTTP headers sent with every request (e.g. an `Authorization` bearer token).
+
+### Editing via the UI (recommended)
+
+In the Streamlit sidebar, open the **MCP Tools** section:
+- **Add** a tool with a name, URL, and optional headers (as a JSON object). On save, the tool is added and `mcp_tools.json` is rewritten.
+- **Remove** a tool with its **Remove** button; the file is updated too.
+
+Changes take effect immediately — the agent is rebuilt with the new tool set.
+
+### Editing the file directly
+
+You can also edit `mcp_tools.json` by hand, for example to add a tool with an auth header:
+
+```json
+{
+  "dlptest": {
+    "url": "https://mcp.dlptest.com/api/mcp/",
+    "headers": {}
+  },
+  "weather": {
+    "url": "https://example.com/mcp/",
+    "headers": { "Authorization": "Bearer <token>" }
+  }
+}
+```
+
+Restart the app (or refresh the Streamlit session) for hand-edited changes to load.
+
+> ⚠️ `mcp_tools.json` can contain secrets (tokens in `headers`), so it is **git-ignored** by default. Delete the file to reset back to the seeded `dlptest` example on the next run.
 
 ---
 

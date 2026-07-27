@@ -14,7 +14,7 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 import agent_core
-from agent_core import DEFAULT_MCP_CONFIG, build_agent
+from agent_core import build_agent
 
 # --- Session state defaults ---
 if "inspect_prompt_enabled" not in st.session_state:
@@ -92,7 +92,9 @@ if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 
 if "mcp_tools_config" not in st.session_state:
-    st.session_state.mcp_tools_config = dict(DEFAULT_MCP_CONFIG)
+    # Loads from the MCP config file, seeding it with the dlptest example on
+    # first run if the file does not exist yet.
+    st.session_state.mcp_tools_config = agent_core.load_mcp_config()
 
 if "agent" not in st.session_state:
     st.session_state.agent = None
@@ -310,6 +312,7 @@ with st.sidebar:
                              help="HTTP headers sent with every request to this tool")
                 if st.button("Remove", key=f"remove_mcp_{tool_name}", type="secondary"):
                     del st.session_state.mcp_tools_config[tool_name]
+                    agent_core.save_mcp_config(st.session_state.mcp_tools_config)
                     reset_agent()
                     st.rerun()
 
@@ -339,6 +342,7 @@ with st.sidebar:
                         "url": new_url,
                         "headers": headers,
                     }
+                    agent_core.save_mcp_config(st.session_state.mcp_tools_config)
                     reset_agent()
                     st.rerun()
 

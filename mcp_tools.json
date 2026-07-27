@@ -1,0 +1,6 @@
+{
+  "dlptest": {
+    "url": "https://mcp.dlptest.com/api/mcp/",
+    "headers": {}
+  }
+}
