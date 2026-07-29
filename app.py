@@ -253,6 +253,49 @@ with st.sidebar:
 
     with st.expander("Model"):
 
+        # --- Provider credentials (read/write .env) ---
+        with st.expander("Provider API Keys & Base URLs"):
+            with st.form("provider_keys_config"):
+                llm_vars = [
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_BASE_URL",
+                    "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL",
+                ]
+                new_llm_values = {}
+                for var_name in llm_vars:
+                    label = var_name.replace("_", " ").title()
+                    is_secret = var_name.endswith("_KEY")
+                    new_llm_values[var_name] = st.text_input(
+                        label,
+                        value=os.environ.get(var_name, ""),
+                        type="password" if is_secret else "default",
+                        key=f"llm_cfg_{var_name}",
+                    )
+
+                if st.form_submit_button("💾 Save & Apply"):
+                    dotenv_path = find_dotenv(usecwd=True)
+                    changed = any(
+                        new_val != os.environ.get(var_name, "")
+                        for var_name, new_val in new_llm_values.items()
+                    )
+                    if changed:
+                        for var_name, new_val in new_llm_values.items():
+                            os.environ[var_name] = new_val
+                            if dotenv_path:
+                                set_key(dotenv_path, var_name, new_val)
+                        # Invalidate cached provider availability / model lists so
+                        # the selectors pick up the new keys on rerun.
+                        for cache_key in ("anthropic_models", "openai_models"):
+                            st.session_state.pop(cache_key, None)
+                        if dotenv_path:
+                            st.success("Saved to .env and applied.")
+                        else:
+                            st.warning("Applied for this session — no .env file found, changes won't survive a restart.")
+                        st.rerun()
+                    else:
+                        st.info("No changes detected.")
+
         # Only offer Anthropic / OpenAI when their API keys are configured,
         # and Ollama only when a local Ollama server is reachable.
         provider_options = []

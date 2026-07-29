@@ -120,20 +120,74 @@ uv run uvicorn api:app --reload --port 8000
 - Health check: `GET http://localhost:8000/health`
 - Interactive docs: http://localhost:8000/docs
 
-Example request:
+### API usage
+
+The API is **session-based**. You open a session (which builds the agent for a
+given provider/model/mode), send one or more chat messages referencing that
+session, then close it (which discards the agent). Conversation history is kept
+per session.
+
+#### Endpoints
+
+| Method & path | Purpose |
+|---------------|---------|
+| `POST /v1/sessions/open` | Create an agent and start a session; returns a `thread_id` |
+| `POST /v1/chat` | Send a message to an open session |
+| `POST /v1/sessions/close` | Terminate a session and discard its agent |
+| `GET /health` | Liveness check |
+
+#### `POST /v1/sessions/open`
+
+Request body:
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `provider` | string | `"Anthropic"` | `Anthropic`, `OpenAI`, or `Ollama` |
+| `model` | string | `"claude-haiku-4-5-20251001"` | Model id for the provider |
+| `mode` | string | `"DAS"` | `DAS` (AI Guard middleware) or `Proxy` (Zscaler reverse proxy) |
+
+Response: `{ "thread_id": "<uuid>" }`
+
+#### `POST /v1/chat`
+
+Request body:
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `message` | string | — | **Required.** The user message |
+| `thread_id` | string | — | **Required.** From `/v1/sessions/open` |
+| `inspect_prompt` | bool | `true` | Run AI Guard on the prompt (IN) |
+| `inspect_response` | bool | `true` | Run AI Guard on the response (OUT) |
+
+Response: `{ "response": "<assistant text>", "thread_id": "<uuid>" }`
+
+Returns **404** if the `thread_id` does not match an open session.
+
+#### `POST /v1/sessions/close`
+
+Request body: `{ "thread_id": "<uuid>" }` → Response: `{ "status": "closed", "thread_id": "<uuid>" }` (404 if unknown).
+
+#### Full example
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat \
+# 1. Open a session (builds the agent)
+TID=$(curl -s -X POST http://localhost:8000/v1/sessions/open \
   -H "Content-Type: application/json" \
-  -d '{
-    "message": "Hello!",
-    "provider": "Anthropic",
-    "model": "claude-haiku-4-5-20251001",
-    "mode": "DAS",
-    "inspect_prompt": true,
-    "inspect_response": true
-  }'
+  -d '{"provider":"Anthropic","model":"claude-haiku-4-5-20251001","mode":"DAS"}' \
+  | jq -r .thread_id)
+
+# 2. Send a message (thread_id is required)
+curl -s -X POST http://localhost:8000/v1/chat \
+  -H "Content-Type: application/json" \
+  -d "{\"message\":\"Hello!\",\"thread_id\":\"$TID\",\"inspect_prompt\":true,\"inspect_response\":true}"
+
+# 3. Close the session (discards the agent)
+curl -s -X POST http://localhost:8000/v1/sessions/close \
+  -H "Content-Type: application/json" \
+  -d "{\"thread_id\":\"$TID\"}"
 ```
+
+> Reuse the same `thread_id` across multiple `/v1/chat` calls to continue a conversation with memory.
 
 ---
 
