@@ -44,7 +44,7 @@ class AIGuardClient:
             "content": content,
         }
 
-        r = requests.post(self.resolve_url, json=payload, headers=headers, timeout=self.timeout_s,verify=False)
+        r = requests.post(self.resolve_url, json=payload, headers=headers, timeout=self.timeout_s)
         r.raise_for_status()
         data = r.json()
 
@@ -69,7 +69,7 @@ class AIGuardClient:
             "content": content,
         }
 
-        r = requests.post(self.url, json=payload, headers=headers, timeout=self.timeout_s,verify=False)
+        r = requests.post(self.url, json=payload, headers=headers, timeout=self.timeout_s)
         r.raise_for_status()
         data = r.json()
 
