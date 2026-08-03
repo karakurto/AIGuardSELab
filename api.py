@@ -1,97 +1,88 @@
-import uuid
+"""SPLX proxy implementation of the AI Guard chat agent.
+
+Implements the splx-proxy-sdk Server contract (open-session / send-message /
+close-session). Provider/model/mode are supplied per session via typed
+extra_args. See https://pypi.org/project/splx-proxy-sdk/.
+
+Auth: set SPLX_PROXY_API_KEY before startup (the SDK validates the x-api-key
+header against it and raises at import time if it is missing).
+"""
+from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Request
 from pydantic import BaseModel
+from splx_proxy_sdk import (
+    CloseSessionRequest,
+    CloseSessionResponse,
+    NotFoundException,
+    OpenSessionRequest,
+    OpenSessionResponse,
+    SendMessageRequest,
+    SendMessageResponse,
+    Server,
+)
 
 from agent_core import build_agent, chat as agent_chat
 
 load_dotenv()
 
-app = FastAPI(title="AI Guard Chat API", version="1.0.0")
 
-# Active sessions: thread_id -> {"agent", "provider", "model", "mode"}.
-# An agent is built when a session is opened and discarded when it is closed.
-_sessions: dict[str, dict] = {}
-
-
-class OpenSessionRequest(BaseModel):
+class SessionConfig(BaseModel):
+    """Per-session configuration passed via the SDK's extra_args."""
     provider: str = "Anthropic"
     model: str = "claude-haiku-4-5-20251001"
     mode: str = "DAS"          # "DAS" (AI Guard middleware) or "Proxy" (Zscaler reverse proxy)
-
-
-class OpenSessionResponse(BaseModel):
-    thread_id: str
-
-
-class CloseSessionRequest(BaseModel):
-    thread_id: str
-
-
-class CloseSessionResponse(BaseModel):
-    status: str
-    thread_id: str
-
-
-class ChatRequest(BaseModel):
-    message: str
-    thread_id: str            # required — obtained from /v1/sessions/open
     inspect_prompt: bool = True
     inspect_response: bool = True
 
 
-class ChatResponse(BaseModel):
-    response: str
-    thread_id: str
+class ChatProxy(Server[SessionConfig]):
+    """AI Guard agent exposed through the SPLX proxy SDK."""
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # session_id -> {"agent", "config"}
+        self._sessions: dict[str, dict] = {}
 
-@app.post("/v1/sessions/open", response_model=OpenSessionResponse)
-async def open_session(req: OpenSessionRequest):
-    """Create an agent for the given provider/model/mode and return its session id."""
-    try:
-        agent, _ = await build_agent(req.provider, req.model, req.mode)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    async def open_session(
+        self, request: OpenSessionRequest[SessionConfig], raw: Request
+    ) -> OpenSessionResponse:
+        """Build an agent for the requested provider/model/mode and start a session."""
+        config = request.extra_args or SessionConfig()
+        session_id = request.session_id or str(uuid4())
+        agent, _ = await build_agent(config.provider, config.model, config.mode)
+        self._sessions[session_id] = {"agent": agent, "config": config}
+        return OpenSessionResponse(session_id=session_id)
 
-    thread_id = str(uuid.uuid4())
-    _sessions[thread_id] = {
-        "agent": agent,
-        "provider": req.provider,
-        "model": req.model,
-        "mode": req.mode,
-    }
-    return OpenSessionResponse(thread_id=thread_id)
-
-
-@app.post("/v1/sessions/close", response_model=CloseSessionResponse)
-async def close_session(req: CloseSessionRequest):
-    """Terminate a session and discard its agent."""
-    if _sessions.pop(req.thread_id, None) is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return CloseSessionResponse(status="closed", thread_id=req.thread_id)
-
-
-@app.post("/v1/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatRequest):
-    """Send a message to an open session's agent."""
-    session = _sessions.get(req.thread_id)
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found. Open one via POST /v1/sessions/open.",
-        )
-    try:
+    async def send_message(
+        self, request: SendMessageRequest[SessionConfig], raw: Request
+    ) -> SendMessageResponse:
+        """Send a user message to the session's agent and return the response."""
+        session = self._sessions.get(request.session_id)
+        if session is None:
+            raise NotFoundException(
+                details="Session not found. Open one via POST /open-session."
+            )
+        config: SessionConfig = session["config"]
         response, _ = await agent_chat(
             session["agent"],
-            req.message,
-            req.thread_id,
-            inspect_prompt=req.inspect_prompt,
-            inspect_response=req.inspect_response,
+            request.message,
+            request.session_id,
+            inspect_prompt=config.inspect_prompt,
+            inspect_response=config.inspect_response,
         )
-        return ChatResponse(response=response, thread_id=req.thread_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return SendMessageResponse(session_id=request.session_id, message=response)
+
+    async def close_session(
+        self, request: CloseSessionRequest[SessionConfig], raw: Request
+    ) -> CloseSessionResponse:
+        """Terminate a session and discard its agent."""
+        self._sessions.pop(request.session_id, None)
+        return CloseSessionResponse()
+
+
+app = ChatProxy()
 
 
 @app.get("/health")

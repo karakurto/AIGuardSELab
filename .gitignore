@@ -23,3 +23,5 @@ venv/
 
 # Tooling / caches
 .chainlit/
+/AI_Guard_LangChain_Middleware.docx
+/middleware_flow.png

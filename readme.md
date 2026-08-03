@@ -10,7 +10,7 @@ It ships two entry points that share the same agent core:
 | Component | File | Port | Purpose |
 |-----------|------|------|---------|
 | Streamlit UI | `app.py` | `8501` | Interactive chat demo with sidebar controls (mode, provider, MCP tools, RAG upload) |
-| FastAPI REST | `api.py` | `8000` | `POST /v1/chat` endpoint + `GET /health` |
+| SPLX proxy API | `api.py` | `8000` | `splx-proxy-sdk` server: `/open-session`, `/send-message`, `/close-session` |
 
 Both are built on `agent_core.py` (agent construction + chat loop) and `aiguard_utils.py` (the AI Guard HTTP client).
 
@@ -67,6 +67,10 @@ GUARDRAIL_DAS_POLICY_ID=your-policy-id
 # Required for "Proxy" mode.
 GUARDRAIL_PROXY_API_KEY=your-proxy-api-key
 
+# ── SPLX proxy API (api.py) ──────────────────────────────────
+# Required to run the API. Validated against the incoming x-api-key header.
+SPLX_PROXY_API_KEY=your-splx-proxy-key
+
 # ── LangSmith tracing (all optional) ─────────────────────────
 # LANGSMITH_TRACING=true
 # LANGSMITH_ENDPOINT=https://api.smith.langchain.com
@@ -83,6 +87,7 @@ GUARDRAIL_PROXY_API_KEY=your-proxy-api-key
 | `GUARDRAIL_DAS_API_KEY` | For DAS mode | Bearer token for the AI Guard policy engine |
 | `GUARDRAIL_DAS_POLICY_ID` | For DAS mode | Which AI Guard policy to enforce |
 | `GUARDRAIL_PROXY_API_KEY` | For Proxy mode | `X-ApiKey` header sent to the Zscaler proxy |
+| `SPLX_PROXY_API_KEY` | Yes (to run the API) | Validated against the `x-api-key` header by the SPLX proxy SDK; required at startup |
 | `OPENAI_API_KEY` | Optional | Only if using the OpenAI provider |
 | `OPENAI_BASE_URL` | Optional | Overrides the default OpenAI endpoint for the OpenAI provider; ignored in Proxy mode |
 | `LANGSMITH_TRACING` / `LANGSMITH_ENDPOINT` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional | LangSmith run tracing/observability |
@@ -111,83 +116,96 @@ uv run streamlit run app.py
 
 Then open http://localhost:8501.
 
-### FastAPI REST API - To run in API mode (useful to test against AI Red Teaming)
+### SPLX proxy API - To run in API mode (useful to test against AI Red Teaming)
+
+The API implements the [splx-proxy-sdk](https://pypi.org/project/splx-proxy-sdk/) `Server` contract, so it can be driven by the SPLX platform (or any client that speaks the SDK's protocol).
+
+**`SPLX_PROXY_API_KEY` must be set before startup** — the SDK validates the `x-api-key` header against it and raises at import time if it is missing.
 
 ```bash
-uv run uvicorn api:app --reload --port 8000
+SPLX_PROXY_API_KEY=your-secret uv run uvicorn api:app --reload --port 8000
 ```
 
+- Testing UI: http://localhost:8000/ (mounted by the SDK)
 - Health check: `GET http://localhost:8000/health`
 - Interactive docs: http://localhost:8000/docs
 
 ### API usage
 
-The API is **session-based**. You open a session (which builds the agent for a
-given provider/model/mode), send one or more chat messages referencing that
-session, then close it (which discards the agent). Conversation history is kept
-per session.
+The API is **session-based**. You open a session (which builds the agent for a given provider/model/mode), send one or more messages referencing that session, then close it (which discards the agent). Conversation history is kept per session.
+
+Every request must include the `x-api-key` header matching `SPLX_PROXY_API_KEY`. Provider/model/mode and the AI Guard inspection flags are passed in the SDK's `extra_args` object.
 
 #### Endpoints
 
 | Method & path | Purpose |
 |---------------|---------|
-| `POST /v1/sessions/open` | Create an agent and start a session; returns a `thread_id` |
-| `POST /v1/chat` | Send a message to an open session |
-| `POST /v1/sessions/close` | Terminate a session and discard its agent |
+| `POST /open-session` | Create an agent and start a session; returns a `session_id` |
+| `POST /send-message` | Send a message to an open session |
+| `POST /close-session` | Terminate a session and discard its agent |
 | `GET /health` | Liveness check |
 
-#### `POST /v1/sessions/open`
+#### `POST /open-session`
 
 Request body:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `session_id` | string \| null | Optional. A new UUID is generated if omitted |
+| `extra_args` | object \| null | Optional session config (see below) |
+
+`extra_args` fields:
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `provider` | string | `"Anthropic"` | `Anthropic`, `OpenAI`, or `Ollama` |
 | `model` | string | `"claude-haiku-4-5-20251001"` | Model id for the provider |
 | `mode` | string | `"DAS"` | `DAS` (AI Guard middleware) or `Proxy` (Zscaler reverse proxy) |
-
-Response: `{ "thread_id": "<uuid>" }`
-
-#### `POST /v1/chat`
-
-Request body:
-
-| Field | Type | Default | Notes |
-|-------|------|---------|-------|
-| `message` | string | — | **Required.** The user message |
-| `thread_id` | string | — | **Required.** From `/v1/sessions/open` |
 | `inspect_prompt` | bool | `true` | Run AI Guard on the prompt (IN) |
 | `inspect_response` | bool | `true` | Run AI Guard on the response (OUT) |
 
-Response: `{ "response": "<assistant text>", "thread_id": "<uuid>" }`
+Response: `{ "session_id": "<uuid>" }`
 
-Returns **404** if the `thread_id` does not match an open session.
+#### `POST /send-message`
 
-#### `POST /v1/sessions/close`
+Request body:
 
-Request body: `{ "thread_id": "<uuid>" }` → Response: `{ "status": "closed", "thread_id": "<uuid>" }` (404 if unknown).
+| Field | Type | Notes |
+|-------|------|-------|
+| `session_id` | string | **Required.** From `/open-session` |
+| `message` | string | **Required.** The user message |
+
+Response: `{ "session_id": "<uuid>", "message": "<assistant text>" }`
+
+Returns **404** (`NOT_FOUND`) if the `session_id` does not match an open session.
+
+#### `POST /close-session`
+
+Request body: `{ "session_id": "<uuid>" }` → Response: `{}` (idempotent — closing an unknown session still succeeds).
 
 #### Full example
 
 ```bash
-# 1. Open a session (builds the agent)
-TID=$(curl -s -X POST http://localhost:8000/v1/sessions/open \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"Anthropic","model":"claude-haiku-4-5-20251001","mode":"DAS"}' \
-  | jq -r .thread_id)
+KEY=your-secret
 
-# 2. Send a message (thread_id is required)
-curl -s -X POST http://localhost:8000/v1/chat \
-  -H "Content-Type: application/json" \
-  -d "{\"message\":\"Hello!\",\"thread_id\":\"$TID\",\"inspect_prompt\":true,\"inspect_response\":true}"
+# 1. Open a session (builds the agent). Config goes in extra_args.
+SID=$(curl -s -X POST http://localhost:8000/open-session \
+  -H "Content-Type: application/json" -H "x-api-key: $KEY" \
+  -d '{"extra_args":{"provider":"Anthropic","model":"claude-haiku-4-5-20251001","mode":"DAS"}}' \
+  | jq -r .session_id)
+
+# 2. Send a message
+curl -s -X POST http://localhost:8000/send-message \
+  -H "Content-Type: application/json" -H "x-api-key: $KEY" \
+  -d "{\"session_id\":\"$SID\",\"message\":\"Hello!\"}"
 
 # 3. Close the session (discards the agent)
-curl -s -X POST http://localhost:8000/v1/sessions/close \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_id\":\"$TID\"}"
+curl -s -X POST http://localhost:8000/close-session \
+  -H "Content-Type: application/json" -H "x-api-key: $KEY" \
+  -d "{\"session_id\":\"$SID\"}"
 ```
 
-> Reuse the same `thread_id` across multiple `/v1/chat` calls to continue a conversation with memory.
+> Reuse the same `session_id` across multiple `/send-message` calls to continue a conversation with memory.
 
 ---
 
