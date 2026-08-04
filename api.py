@@ -33,8 +33,8 @@ class SessionConfig(BaseModel):
     provider: str = "Anthropic"
     model: str = "claude-haiku-4-5-20251001"
     mode: str = "DAS"          # "DAS" (AI Guard middleware) or "Proxy" (Zscaler reverse proxy)
-    inspect_prompt: bool = True
-    inspect_response: bool = True
+    inspect_prompt: bool = True ## Set to False if you don't want the prompt to be inspected in DAS mode
+    inspect_response: bool = True ## Set tp False if you don't want the prompt to be inspected in DAS mode
 
 
 class ChatProxy(Server[SessionConfig]):
@@ -72,6 +72,8 @@ class ChatProxy(Server[SessionConfig]):
             inspect_prompt=config.inspect_prompt,
             inspect_response=config.inspect_response,
         )
+
+
         return SendMessageResponse(session_id=request.session_id, message=response)
 
     async def close_session(
