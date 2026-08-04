@@ -236,7 +236,7 @@ async def _init_mcp_tools(mcp_config: dict[str, dict] | None = None) -> list:
     return await client.get_tools()
 
 
-async def build_agent(provider: str, model: str, mode: str, mcp_config: dict[str, str] | None = None):
+async def build_agent(provider: str, model: str, mode: str, mcp_config: dict[str, dict] | None = None):
     """Create an agent and vector store for the given provider/model/mode.
 
     RAG requires Ollama (for the nomic-embed-text embeddings). When Ollama is
@@ -260,8 +260,14 @@ async def build_agent(provider: str, model: str, mode: str, mcp_config: dict[str
         )
         rag_tools = [vector_tool]
 
-    mcp_tools = await _init_mcp_tools(mcp_config)
-    tools = mcp_tools + rag_tools
+    # Only initialize MCP tools when a configuration is explicitly provided.
+    # mcp_config=None (e.g. from the API) means "no MCP tools" rather than
+    # falling back to the default dlptest server.
+    if mcp_config is not None:
+        mcp_tools = await _init_mcp_tools(mcp_config)
+        tools = mcp_tools + rag_tools
+    else:
+        tools = rag_tools
 
     if rag_enabled:
         system_prompt = (
@@ -340,17 +346,21 @@ async def chat(
 
     tool_trace is a list of {"name", "input", "output"} dicts, one per tool call.
     """
+    tool_trace: list[dict] = []
     inspect_prompt_ctx.set(inspect_prompt)
     inspect_response_ctx.set(inspect_response)
 
-    result = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": message}]},
-        {"configurable": {"thread_id": thread_id}},
-    )
+    try:
+
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": message}]},
+            {"configurable": {"thread_id": thread_id}},
+        )
+    except Exception as e:
+        return "Couldn't invoke API, provided returned an error", None
 
 
     # Pair each tool_use block with its matching ToolMessage result
-    tool_trace: list[dict] = []
     msgs = result["messages"]
     for i, msg in enumerate(msgs):
         if not (hasattr(msg, "tool_calls") and msg.tool_calls):
@@ -371,4 +381,5 @@ async def chat(
             return block["text"], tool_trace
     except (IndexError, TypeError):
         pass
+
     return last.content, tool_trace
