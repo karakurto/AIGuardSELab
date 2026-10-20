@@ -19,6 +19,16 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
 
+#Extending for "bash tool" and "Skills" capabilities
+import os
+import subprocess
+from pathlib import Path
+from langchain_core.tools import tool
+
+SKILLS_DIR = Path("./.skills")
+SKILLS_DIR.mkdir(exist_ok=True)
+###
+
 load_dotenv()
 
 # Per-request inspection flags — set by chat() before invoking the agent
@@ -235,6 +245,62 @@ async def _init_mcp_tools(mcp_config: dict[str, dict] | None = None) -> list:
     client = MultiServerMCPClient(client_config)
     return await client.get_tools()
 
+# Extentions for "bash" and "Skills" capabilities
+# 1. Built-in Bash Tool
+@tool
+def run_bash(command: str) -> str:
+    """Execute a bash command and return stdout/stderr."""
+    try:
+        res = subprocess.run(
+            command, shell=True, capture_output=True, text=True, timeout=15
+        )
+        out = res.stdout + (f"\nSTDERR:\n{res.stderr}" if res.stderr else "")
+        return out.strip() or "(No output)"
+    except Exception as e:
+        return f"Error: {e}"
+
+# 2. "Adding Skills" Capability (List / Load / Create Skills)
+def _find_skills() -> dict[str, Path]:
+    """Find skills in ./.skills/<name>/SKILL.md or ./.skills/<name>.md"""
+    found = {}
+    for p in SKILLS_DIR.glob("*.md"):
+        found[p.stem] = p
+    for p in SKILLS_DIR.glob("*/SKILL.md"):
+        found[p.parent.name] = p
+    for p in SKILLS_DIR.glob("*/*.md"):
+        if p.parent.name not in found:
+            found[p.parent.name] = p
+    return found
+
+def get_available_skills_prompt() -> str:
+    skills = list(_find_skills().keys())
+    if not skills:
+        return "\nAvailable Skills: None yet. You can create skills using `add_skill`."
+    return (
+        f"\nAvailable Skills: {', '.join(skills)}. "
+        "When asked about your skills, list these names. "
+        "Call `load_skill` to read a skill's instructions before executing it."
+    )
+
+@tool
+def load_skill(skill_name: str) -> str:
+    """Load the instructions for a named skill from the .skills directory."""
+    skills = _find_skills()
+    if skill_name not in skills:
+        return f"Skill '{skill_name}' not found. Available: {list(skills.keys())}"
+    return skills[skill_name].read_text(encoding="utf-8")
+
+@tool
+def add_skill(skill_name: str, instructions: str) -> str:
+    """Create or update a skill in ./.skills/<skill_name>/SKILL.md."""
+    safe_name = Path(skill_name).stem
+    skill_folder = SKILLS_DIR / safe_name
+    skill_folder.mkdir(parents=True, exist_ok=True)
+    path = skill_folder / "SKILL.md"
+    path.write_text(instructions, encoding="utf-8")
+    return f"Skill '{safe_name}' saved to {path}."
+
+###
 
 async def build_agent(provider: str, model: str, mode: str, mcp_config: dict[str, dict] | None = None):
     """Create an agent and vector store for the given provider/model/mode.
@@ -265,18 +331,20 @@ async def build_agent(provider: str, model: str, mode: str, mcp_config: dict[str
     # falling back to the default dlptest server.
     if mcp_config is not None:
         mcp_tools = await _init_mcp_tools(mcp_config)
-        tools = mcp_tools + rag_tools
+        tools = mcp_tools + rag_tools + [run_bash, load_skill, add_skill]
     else:
-        tools = rag_tools
+        tools = rag_tools + [run_bash, load_skill, add_skill]
 
     if rag_enabled:
         system_prompt = (
-            "You are a virtual assistant. Always invoke tool query_knowledge_base before answering questions. "
+            "You are a virtual assistant. Always invoke tool query_knowledge_base before answering questions."
+             f"{get_available_skills_prompt()}"
             "Greet the user and say hello, I am an AI Guard demo agent!!"
         )
     else:
         system_prompt = (
-            "You are a virtual assistant. "
+            "You are a virtual assistant."
+             f"{get_available_skills_prompt()}"
             "Greet the user and say hello, I am an AI Guard demo agent!!"
         )
 
